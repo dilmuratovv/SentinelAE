@@ -1,0 +1,18 @@
+name: SentinelAE
+version: '${project.version}'
+api-version: '1.21'
+main: uz.sentinel.ae.SentinelAE
+description: Anti-ESP for Paper (line-of-sight entity concealment)
+authors: [azicoo]
+website: https://github.com/dilmuratovv/SentinelAE
+commands:
+  sae:
+    description: SentinelAE status and administration
+    usage: /sae <status|reload|check <viewer> <subject>>
+    permission: sentinelae.admin
+permissions:
+  sentinelae.admin:
+    default: op
+  sentinelae.bypass:
+    description: Sees every entity normally (give to trusted staff only)
+    default: false

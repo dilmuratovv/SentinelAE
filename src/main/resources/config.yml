@@ -1,0 +1,34 @@
+# SentinelAE: protected entities are only sent to a player while that player could see them.
+
+# Entity types to protect.
+protected-types: [PLAYER, ARMOR_STAND]
+
+# Subjects farther than this (blocks) are never concealed. Paper's own tracking range usually ends earlier (48 for players).
+max-distance: 80
+
+# Lag tolerance: a subject is revealed when it, or where it will be in this many ticks, or this much wider, could be
+# seen. Higher values mean less pop-in for laggy players and slightly earlier reveals.
+lookahead-ticks: 3
+box-margin: 0.25
+
+# A visible subject is concealed only after this many consecutive blocked checks (prevents flicker at edges).
+conceal-after-checks: 2
+
+# Work limits per server tick. Close pairs are checked every tick, far pairs every few ticks; the limits stop a huge
+# crowd from costing TPS (late checks are reported as "lagging" in /sae status).
+pairs-per-tick: 512
+max-micros-per-tick: 2000
+
+# Armor stands used as holograms (custom name shown, marker or invisible) are never concealed.
+skip-holograms: true
+
+# Full blocks that should not hide anything (players can see through or past them).
+transparent-blocks: [BARRIER, LIGHT, STRUCTURE_VOID]
+
+# auto: use Paper's tracker directly (nothing about a concealed entity is sent, tab list untouched) and fall back
+# to the public hide/show API when that is unavailable. api: always use hide/show (concealed players then leave
+# the tab list). Changing it needs a restart.
+tracker-mode: auto
+
+# Log every conceal/reveal decision (very verbose; for troubleshooting only).
+debug: false
