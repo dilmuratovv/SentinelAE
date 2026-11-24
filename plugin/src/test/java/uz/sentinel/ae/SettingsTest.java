@@ -27,7 +27,10 @@ class SettingsTest {
 
     @Test void defaultsWhenMissing() {
         Settings s = Settings.from(new YamlConfiguration(), w -> { });
-        assertEquals(80, s.maxDistance());
+        assertEquals(128, s.maxDistance());
+        assertTrue(s.storageEsp());
+        assertTrue(s.hideSounds());
+        assertTrue(s.storageBlocks().contains(org.bukkit.Material.CHEST));
         assertEquals(3, s.lookaheadTicks());
         assertEquals(2, s.concealAfter());
         assertTrue(s.skipHolograms());
@@ -35,10 +38,30 @@ class SettingsTest {
 
     @Test void unknownNamesAreReported() {
         YamlConfiguration c = new YamlConfiguration();
+        c.set("protected", List.of());
         c.set("protected-types", List.of("PLAYER", "NOT_A_MOB"));
         List<String> warnings = new ArrayList<>();
         Settings s = Settings.from(c, warnings::add);
         assertEquals(1, s.types().size());
+        assertEquals(1, warnings.size());
+    }
+
+    @Test void defaultGroupsCoverWhatEspDraws() {
+        Settings s = Settings.from(new YamlConfiguration(), w -> { });
+        for (String t : List.of("PLAYER", "ARMOR_STAND", "ITEM_FRAME", "GLOW_ITEM_FRAME", "ITEM", "ARROW", "ENDER_PEARL",
+                "TRIDENT", "FISHING_BOBBER", "WOLF", "CAT", "HORSE", "VILLAGER", "CHEST_MINECART", "PAINTING")) {
+            assertTrue(s.types().contains(org.bukkit.entity.EntityType.valueOf(t)), t);
+        }
+        assertFalse(s.types().contains(org.bukkit.entity.EntityType.ZOMBIE), "plain mobs only with the mobs group");
+        assertTrue(s.primary(org.bukkit.entity.EntityType.PLAYER));
+        assertFalse(s.primary(org.bukkit.entity.EntityType.ITEM));
+    }
+
+    @Test void unknownGroupIsReported() {
+        YamlConfiguration c = new YamlConfiguration();
+        c.set("protected", List.of("players", "dragons"));
+        List<String> warnings = new ArrayList<>();
+        Settings.from(c, warnings::add);
         assertEquals(1, warnings.size());
     }
 }

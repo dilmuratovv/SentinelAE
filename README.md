@@ -36,7 +36,7 @@ Five plugins by **azicoo**, each with its own repository and release. Every one 
 |---|---|
 | [SentinelAC](https://github.com/dilmuratovv/SentinelAC) | Anticheat: prediction-based movement, combat and packet checks. |
 | [SentinelAD](https://github.com/dilmuratovv/SentinelAD) | Anti-dupe: a global item ledger that removes duplicated items. |
-| [SentinelAE](https://github.com/dilmuratovv/SentinelAE) | Anti-ESP: hidden players and armor stands are never sent to the client. |
+| [SentinelAE](https://github.com/dilmuratovv/SentinelAE) | Anti-ESP: players, entities and storage blocks behind walls are never sent to the client. |
 | [SentinelAX-ray](https://github.com/dilmuratovv/SentinelAX-ray) | Anti-xray: Paper's native engine set up per world, plus mining analysis. |
 | [SentinelGuard](https://github.com/dilmuratovv/SentinelGuard) | Moderation: bans, mutes, history, `/sus`; collects the flags of AC, AD and AX-ray. |
 
@@ -47,11 +47,14 @@ Together: SentinelGuard adds the findings of SentinelAC, SentinelAD and Sentinel
 | Area | What SentinelAE provides |
 |---|---|
 | **Line of sight** | An exact voxel raycast (Amanatides–Woo) from the viewer's eyes to 15 points of the target. Only full, opaque blocks hide; glass, leaves, slabs and doors do not. |
+| **Every kind of ESP** | Players, armor stands, item frames, paintings, boats, minecarts (with chests), horses, pets, villagers, projectiles and dropped items: ESP, tracers, radar and base finders have nothing to draw behind walls. |
+| **Storage ESP** | Chests, barrels, shulker boxes, ender chests, hoppers, furnaces, spawners... arrive as air (full blocks as stone) in the chunk data itself and are sent for real once in sight; out of sight for a while, they are hidden again. Their open/close animations and sounds stay hidden too. |
+| **Sound ESP** | Footsteps, eating, attacks, mining animations and particles of a concealed player are not sent to whoever it is concealed from. |
 | **No packets** | A concealed target is removed from Paper's tracker for that viewer: not a single packet about it reaches the client. |
 | **Tab list stays** | Hidden players remain in the tab list, and other plugins' vanish/hide features are left alone. |
-| **Lag compensation** | Target and viewer velocity are tracked; a player running around a corner appears about 2–3 ticks before they become visible. |
+| **Lag compensation** | Target and viewer velocity are tracked (projectiles use their exact server velocity); the viewer's ping widens the look-ahead, so high-ping players see enemies in time. |
 | **No flicker** | A target is concealed only after `conceal-after-checks` blocked checks in a row; revealed immediately when visible. |
-| **Budgeted** | Near hidden pairs are checked every tick, far and visible ones less often, within `pairs-per-tick` and `max-micros-per-tick`. |
+| **Budgeted** | Players first, other subjects share `secondary-share` of the budget; near hidden pairs every tick, far and visible ones less often. Under overload a concealed player is shown rather than late (`fail-open-ticks`). |
 | **Safe fallback** | If Paper internals ever change, SentinelAE switches to Paper's hide/show API automatically. |
 
 ## How it works
@@ -85,12 +88,15 @@ Protection is on immediately. `/sae status` shows the mode (`direct tracker` on 
 
 | Key | Default | Purpose |
 |---|---|---|
-| `protected-types` | `[PLAYER, ARMOR_STAND]` | Entity types that are hidden behind walls. |
-| `max-distance` | `80` | Targets farther away are not checked. |
-| `lookahead-ticks` | `3` | How far ahead a moving target is predicted. |
+| `protected` | `[players, armor-stands, item-frames, hanging, vehicles, projectiles, pets, items, villagers]` | Entity groups hidden behind walls (`mobs` adds every mob). |
+| `protected-types` | `[]` | Extra single entity types. |
+| `max-distance` | `128` | Targets farther away are not checked. |
+| `lookahead-ticks` · `max-ping-lookahead-ticks` | `3` · `6` | How far ahead a moving target is predicted; ping adds up to the second value. |
 | `box-margin` | `0.25` | Extra width around the target, in blocks. |
 | `conceal-after-checks` | `2` | Blocked checks in a row before hiding (prevents flicker). |
-| `pairs-per-tick` · `max-micros-per-tick` | `512` · `2000` | Work budget per tick. |
+| `pairs-per-tick` · `max-micros-per-tick` · `secondary-share` · `fail-open-ticks` | `768` · `2500` · `0.4` · `4` | Work budget per tick, the part for non-player subjects, and when an overdue concealed player is shown. |
+| `storage-esp.*` | on, 48 blocks | `enabled`, `reveal-distance`, `check-ticks`, `max-micros-per-tick`, `rehide-after-ticks` (200), `blocks`. |
+| `hide-sounds` | `true` | Drop sounds, particles and break animations of concealed subjects. |
 | `skip-holograms` | `true` | Never hide hologram armor stands. |
 | `transparent-blocks` | `[BARRIER, LIGHT, STRUCTURE_VOID]` | Blocks that never hide anything. |
 | `tracker-mode` | `auto` | `auto` (direct tracker, falls back to API) or `api`. |
@@ -116,7 +122,8 @@ The JAR is compiled against the oldest supported API (Paper 1.21); every class a
 ### Good to know
 
 - The server cannot take back a position the client has already seen; hiding starts about 0.3–0.4 s after a target goes behind a wall (`conceal-after-checks`).
-- Sounds, particles, block-entity contents and other entity types (unless added to `protected-types`) are not covered.
+- Storage blocks within 48 blocks of a player are revealed as soon as one face is in sight; farther ones stay hidden (cosmetic: a chest 60 blocks away in the open shows a moment later). A hacked client that probes positions with block interactions inside its reach can still find a chest there.
+- Plain mobs are only protected with the `mobs` group (big farms cost more checks). A cheat that keeps its own record of everything it was ever sent keeps what the player once saw.
 - Player name tags are not visible through walls (unlike vanilla).
 - Folia, other forks and Paper before 1.21 are not supported.
 

@@ -71,7 +71,7 @@ final class VisibilityEngine {
     private boolean warned;
 
     // statistics
-    private long checks, rays, conceals, reveals, lagging, checkNanos, purges;
+    private long checks, rays, conceals, reveals, lagging, checkNanos, purges, failOpens;
     private long lastTickNanos, maxTickNanos, sumTickNanos;
     private int sampledTicks;
 
@@ -85,6 +85,11 @@ final class VisibilityEngine {
     }
 
     boolean direct() { return access != null; }
+
+    boolean settingsHideSounds() { return settings.hideSounds(); }
+
+    /** Which materials hide what is behind them (by ordinal); shared with the storage guard. */
+    boolean[] occluding() { return occluding; }
 
     void apply(Settings s) {
         settings = s;
@@ -168,7 +173,7 @@ final class VisibilityEngine {
         p.blockedStreak = p.concealed ? settings.concealAfter() : 0;
         if (p.concealed) conceals++;
         debug(p.concealed ? "new-pair concealed" : "new-pair shown", p);
-        schedule(p, tick + SamplePoints.interval(p.distance, p.concealed));
+        schedule(p, tick + interval(p));
         return !p.concealed;
     }
 
@@ -198,22 +203,48 @@ final class VisibilityEngine {
             for (Pair p : pendingApiHide) if (!p.dead && p.concealed && !p.apiHidden) apiHide(p);
             pendingApiHide.clear();
         }
-        int done = 0;
+        int done = 0, secondary = 0;
+        int secondaryCap = (int) Math.max(1, s.pairsPerTick() * s.secondaryShare());
+        long secondaryNanos = (long) (s.maxNanosPerTick() * s.secondaryShare());
         boolean cut = false;
+        List<Item> deferred = null;
+        int polled = 0, pollCap = s.pairsPerTick() * 4;
         while (!queue.isEmpty() && queue.peek().due <= now) {
             if (done >= s.pairsPerTick() || System.nanoTime() - start >= s.maxNanosPerTick()) { cut = true; break; }
+            if (++polled > pollCap) break; // the rest are deferred secondary pairs: next tick
             Item item = queue.poll();
             Pair p = item.pair;
             if (p.dead || item.due != p.due) continue;
+            // Players come first: other subjects (items, frames, mobs...) only get a share of the budget.
+            if (!s.primary(p.target.getType()) && (secondary >= secondaryCap || System.nanoTime() - start >= secondaryNanos)) {
+                if (deferred == null) deferred = new ArrayList<>();
+                deferred.add(item);
+                continue;
+            }
             p.due = 0;
             long c0 = System.nanoTime();
             check(p);
             checkNanos += System.nanoTime() - c0;
             done++;
+            if (!s.primary(p.target.getType())) secondary++;
         }
+        if (deferred != null) for (Item it : deferred) queue.add(it);
         // Counting late pairs walks the queue, so only do it when the budget actually ran out.
         long late = 0;
-        if (cut) for (Item it : queue) if (it.due <= now && !it.pair.dead && it.due == it.pair.due) late++;
+        // Walking the whole queue costs: only when players themselves ran out of budget, or now and then.
+        if (cut || (deferred != null && now % 10 == 0)) {
+            for (Item it : queue) {
+                Pair p = it.pair;
+                if (it.due > now || p.dead || it.due != p.due) continue;
+                late++;
+                // Fail open: a concealed player whose check is overdue is shown rather than risk an invisible attacker.
+                if (p.concealed && s.primary(p.target.getType()) && now - it.due >= s.failOpenTicks()) {
+                    p.blockedStreak = 0;
+                    reveal(p);
+                    failOpens++;
+                }
+            }
+        }
         lagging = late;
         long took = System.nanoTime() - start;
         lastTickNanos = took;
@@ -244,7 +275,13 @@ final class VisibilityEngine {
             drop(p); // out of tracking range, or hidden by another plugin: not our business until tracked again
             return;
         }
-        schedule(p, tick + SamplePoints.interval(p.distance, p.concealed));
+        schedule(p, tick + interval(p));
+    }
+
+    /** Players as often as the distance needs; other subjects (items, frames, mobs) half as often. */
+    private int interval(Pair p) {
+        int i = SamplePoints.interval(p.distance, p.concealed);
+        return settings.primary(p.target.getType()) ? i : i * 2;
     }
 
     /**
@@ -365,6 +402,8 @@ final class VisibilityEngine {
     /** Faster than sprint-jumping is either a teleport or flight; prediction then helps little and costs accuracy. */
     private static double clampSpeed(double v) { return Math.max(-0.8, Math.min(0.8, v)); }
 
+    private static double clampFast(double v) { return Math.max(-4, Math.min(4, v)); }
+
     /** Teleports are not movement: the next sample must not turn the jump into a velocity. */
     void resetMotion(Entity e) { motion.remove(e.getUniqueId()); }
 
@@ -379,7 +418,8 @@ final class VisibilityEngine {
         if (!s.types().contains(t.getType())) return true;
         if (bypass(v)) return true;
         if (!t.isVisibleByDefault() || t.isGlowing()) return true;
-        if (v.getVehicle() == t || t.getVehicle() == v || t.getPassengers().contains(v)) return true;
+        if (v.getVehicle() == t || t.getVehicle() == v || t.getPassengers().contains(v)
+                || (t.getVehicle() != null && t.getVehicle() == v.getVehicle())) return true;
         if (s.skipHolograms() && t instanceof ArmorStand stand && stand.isCustomNameVisible()
                 && (stand.isMarker() || stand.isInvisible())) return true;
         if (p.distance == Double.MAX_VALUE || p.distance > s.maxDistance() || p.distance < 1.0) return true;
@@ -387,11 +427,18 @@ final class VisibilityEngine {
         double ex = la.getX(), ey = la.getY() + v.getEyeHeight(), ez = la.getZ();
         Motion tm = motion(t, lb.getX(), lb.getY(), lb.getZ()), vm = motion(v, la.getX(), la.getY(), la.getZ());
         BoundingBox b = t.getBoundingBox();
-        int look = s.lookaheadTicks();
+        // The viewer sees everything late by their ping: reveal that much earlier too.
+        int look = s.lookaheadTicks() + Math.min(s.maxPingTicks(), Math.max(0, v.getPing()) / 50);
         box[0] = b.getMinX(); box[1] = b.getMinY(); box[2] = b.getMinZ();
         box[3] = b.getMaxX(); box[4] = b.getMaxY(); box[5] = b.getMaxZ();
-        ahead[0] = tm.vx * look; ahead[1] = tm.vy * look; ahead[2] = tm.vz * look;
-        Occluder occ = new Occluder(v.getWorld(), occluding);
+        if (t instanceof org.bukkit.entity.Projectile) {
+            // Projectiles move server side, so their velocity is exact; they are far faster than the walking clamp.
+            org.bukkit.util.Vector vel = t.getVelocity();
+            ahead[0] = clampFast(vel.getX()) * look; ahead[1] = clampFast(vel.getY()) * look; ahead[2] = clampFast(vel.getZ()) * look;
+        } else {
+            ahead[0] = tm.vx * look; ahead[1] = tm.vy * look; ahead[2] = tm.vz * look;
+        }
+        WorldOccluder occ = new WorldOccluder(v.getWorld(), occluding);
         // A subject cannot walk through a wall, so a prediction that crosses one is discarded.
         if (ahead[0] != 0 || ahead[1] != 0 || ahead[2] != 0) {
             double cx = b.getCenterX(), cy = b.getCenterY(), cz = b.getCenterZ();
@@ -407,7 +454,7 @@ final class VisibilityEngine {
         return false;
     }
 
-    private boolean clearFrom(double ex, double ey, double ez, Occluder occ) {
+    private boolean clearFrom(double ex, double ey, double ez, WorldOccluder occ) {
         for (int i = 0; i < points.length; i += 3) {
             rays++;
             if (Raycaster.clear(ex, ey, ez, points[i], points[i + 1], points[i + 2], occ)) return true;
@@ -415,26 +462,33 @@ final class VisibilityEngine {
         return false;
     }
 
-    /** Reads blocks for the raycaster, caching the chunk-loaded test. Unloaded chunks never hide anything. */
-    private static final class Occluder implements Raycaster.Occluder {
-        private final World world;
-        private final boolean[] table;
-        private final int minY, maxY;
-        private int cx = Integer.MIN_VALUE, cz = Integer.MIN_VALUE;
-        private boolean loaded;
-
-        Occluder(World world, boolean[] table) {
-            this.world = world; this.table = table;
-            this.minY = world.getMinHeight(); this.maxY = world.getMaxHeight();
-        }
-
-        @Override public boolean occludes(int x, int y, int z) {
-            if (y < minY || y >= maxY) return false;
-            int ccx = x >> 4, ccz = z >> 4;
-            if (ccx != cx || ccz != cz) { cx = ccx; cz = ccz; loaded = world.isChunkLoaded(ccx, ccz); }
-            if (!loaded) return false;
-            int ord = world.getType(x, y, z).ordinal();
-            return ord < table.length && table[ord];
+    /** Hands every viewer's concealed subjects (entity ids and positions) to {@code out}; viewers with none get empty arrays. */
+    void exportConcealed(java.util.function.BiConsumer<UUID, Object[]> out) {
+        for (Map.Entry<UUID, Map<UUID, Pair>> e : byViewer.entrySet()) {
+            int n = 0;
+            int loud = 0;
+            for (Pair p : e.getValue().values()) {
+                if (!p.concealed || p.dead) continue;
+                n++;
+                if (p.target instanceof org.bukkit.entity.LivingEntity) loud++;
+            }
+            int[] ids = new int[n];
+            // Positional sounds and particles are matched to concealed living subjects (players, pets, mobs): x, y,
+            // z and a radius. Items, frames and stands make no sound, and must not swallow the footsteps of a
+            // visible player walking past them; mobs get a small radius for the same reason.
+            double[] pos = new double[loud * 4];
+            int i = 0, j = 0;
+            for (Pair p : e.getValue().values()) {
+                if (!p.concealed || p.dead || i >= n) continue;
+                ids[i++] = p.target.getEntityId();
+                if (p.target instanceof org.bukkit.entity.LivingEntity && j < loud) {
+                    Location l = p.target.getLocation(lb);
+                    pos[j * 4] = l.getX(); pos[j * 4 + 1] = l.getY() + p.target.getHeight() / 2; pos[j * 4 + 2] = l.getZ();
+                    pos[j * 4 + 3] = p.target instanceof Player ? 2.5 : 1.5;
+                    j++;
+                }
+            }
+            out.accept(e.getKey(), new Object[]{ids, pos});
         }
     }
 
@@ -460,6 +514,7 @@ final class VisibilityEngine {
                 + ", monitored=" + monitored + ", checks=" + checks + ", rays=" + rays
                 + ", us/check=" + (checks == 0 ? "0" : String.format("%.1f", checkNanos / 1000.0 / checks))
                 + ", conceals=" + conceals + ", reveals=" + reveals + ", purges=" + purges + ", lagging=" + lagging
+                + ", fail-opens=" + failOpens
                 + ", tick last=" + lastTickNanos / 1000 + "us avg=" + avg + "us max=" + maxTickNanos / 1000 + "us";
     }
 }

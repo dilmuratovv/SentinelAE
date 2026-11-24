@@ -25,6 +25,8 @@ import org.bukkit.scheduler.BukkitTask;
 /** Anti-ESP: protected entities are only sent to a player while that player could actually see them. */
 public final class SentinelAE extends JavaPlugin implements Listener {
     private VisibilityEngine engine;
+    private StorageGuard guard;
+    private final java.util.Set<java.util.UUID> exported = new java.util.HashSet<>();
     private BukkitTask task;
     private long ticks;
     private boolean released;
@@ -44,8 +46,31 @@ public final class SentinelAE extends JavaPlugin implements Listener {
                 if (entity.getTrackedBy().contains(viewer)) engine.adopt(viewer, entity);
             }
         }
-        task = getServer().getScheduler().runTaskTimer(this, () -> engine.tick(++ticks), 1, 1);
+        if (settings.storageEsp() || settings.hideSounds()) {
+            Nms nms = Nms.create(settings.storageBlocks(), getLogger()::warning);
+            if (nms != null) {
+                guard = new StorageGuard(this, nms, settings, engine::occluding);
+                for (Player p : getServer().getOnlinePlayers()) guard.inject(p);
+                getLogger().info("Packet guard on: storage ESP " + (settings.storageEsp() ? "hidden (" + nms.storageStates() + " block states)" : "off")
+                        + ", sounds and particles of concealed subjects " + (settings.hideSounds() ? "hidden" : "kept") + ".");
+            }
+        }
+        task = getServer().getScheduler().runTaskTimer(this, this::tick, 1, 1);
         getLogger().info("SentinelAE " + getPluginMeta().getVersion() + " enabled.");
+    }
+
+    private void tick() {
+        engine.tick(++ticks);
+        StorageGuard g = guard;
+        if (g == null) return;
+        if (engine.settingsHideSounds()) {
+            java.util.Set<java.util.UUID> now = new java.util.HashSet<>();
+            engine.exportConcealed((viewer, data) -> { now.add(viewer); g.concealed(viewer, (int[]) data[0], (double[]) data[1]); });
+            for (java.util.UUID old : exported) if (!now.contains(old)) g.concealed(old, new int[0], new double[0]);
+            exported.clear();
+            exported.addAll(now);
+        }
+        g.tick(ticks);
     }
 
     private Class<?> craftPlayerClass() {
@@ -72,7 +97,22 @@ public final class SentinelAE extends JavaPlugin implements Listener {
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
-    public void quit(PlayerQuitEvent event) { engine.forget(event.getPlayer()); }
+    public void quit(PlayerQuitEvent event) {
+        engine.forget(event.getPlayer());
+        if (guard != null) guard.remove(event.getPlayer());
+    }
+
+    /** LOWEST: the guard must be in the connection before the first chunk goes out. */
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void join(org.bukkit.event.player.PlayerJoinEvent event) { if (guard != null) guard.inject(event.getPlayer()); }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void chunkUnload(io.papermc.paper.event.packet.PlayerChunkUnloadEvent event) {
+        if (guard != null) guard.chunkUnloaded(event.getPlayer(), event.getChunk().getX(), event.getChunk().getZ());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void blockBreak(org.bukkit.event.block.BlockBreakEvent event) { if (guard != null) guard.broken(event.getBlock(), event.getPlayer()); }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void removed(EntityRemoveFromWorldEvent event) {
@@ -92,10 +132,18 @@ public final class SentinelAE extends JavaPlugin implements Listener {
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
-    public void world(PlayerChangedWorldEvent event) { engine.resetMotion(event.getPlayer()); later(event.getPlayer()); }
+    public void world(PlayerChangedWorldEvent event) {
+        engine.resetMotion(event.getPlayer());
+        later(event.getPlayer());
+        if (guard != null) guard.resetView(event.getPlayer());
+    }
 
     @EventHandler(priority = EventPriority.MONITOR)
-    public void respawn(PlayerRespawnEvent event) { engine.resetMotion(event.getPlayer()); later(event.getPlayer()); }
+    public void respawn(PlayerRespawnEvent event) {
+        engine.resetMotion(event.getPlayer());
+        later(event.getPlayer());
+        if (guard != null) guard.resetView(event.getPlayer());
+    }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void gameMode(PlayerGameModeChangeEvent event) { later(event.getPlayer()); }
@@ -114,6 +162,7 @@ public final class SentinelAE extends JavaPlugin implements Listener {
         if (released || engine == null) return;
         released = true;
         engine.releaseAll();
+        if (guard != null) { guard.releaseAll(); guard = null; }
     }
 
     @Override public void onDisable() {
@@ -125,7 +174,7 @@ public final class SentinelAE extends JavaPlugin implements Listener {
 
     /** Read-only status for SentinelGuard. */
     public String getProtectionStatus() {
-        return engine == null ? "disabled" : engine.status();
+        return engine == null ? "disabled" : engine.status() + (guard == null ? "" : "; " + guard.status());
     }
 
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -133,7 +182,9 @@ public final class SentinelAE extends JavaPlugin implements Listener {
         switch (sub) {
             case "status" -> sender.sendMessage(getProtectionStatus());
             case "reload" -> {
-                engine.apply(load());
+                Settings fresh = load();
+                engine.apply(fresh);
+                if (guard != null) guard.apply(fresh);
                 sender.sendMessage("SentinelAE configuration reloaded; every pair is re-checked on the next tick.");
             }
             case "check" -> {
