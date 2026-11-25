@@ -149,7 +149,8 @@ def main():
             server.send(c)
         server.send('tp Target 0.5 -60 11'); server.pump(seconds=4)
         spawns = [e for e in events(viewer, mark) if e.get('ev') == 'spawn']
-        behind = [e for e in spawns if e.get('z', 0) > 7]
+        # only what the wall (x -8..8) actually hides: a wandering world animal further along is in plain sight
+        behind = [e for e in spawns if e.get('z', 0) > 7 and -8.5 <= e.get('x', 0) <= 9.5]
         front = [e for e in spawns if e.get('z', 0) < 5 and e.get('type') == 'armor_stand']
         check('entities behind wall not sent', not behind, str(behind))
         check('entity in sight sent', bool(front), str(spawns))
