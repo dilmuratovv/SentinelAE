@@ -68,6 +68,7 @@ client.on('sound_effect', p => out({ev: 'sound', x: p.x / 8, y: p.y / 8, z: p.z 
 client.on('entity_sound_effect', p => out({ev: 'entity-sound', id: p.entityId}));
 client.on('world_particles', p => out({ev: 'particle', x: p.x, y: p.y, z: p.z}));
 client.on('block_break_animation', p => out({ev: 'break-anim', id: p.entityId, x: p.location.x, y: p.location.y, z: p.location.z}));
+client.on('open_window', p => out({ev: 'open-window', type: p.inventoryType ?? p.windowType}));
 client.on('block_action', p => out({ev: 'block-action', x: p.location.x, y: p.location.y, z: p.location.z}));
 client.on('world_event', p => out({ev: 'world-event', type: p.effectId, x: p.location.x, y: p.location.y, z: p.location.z}));
 let buf = '';
@@ -81,6 +82,13 @@ process.stdin.on('data', d => {
       const [x, y, z] = a.map(Number);
       const c = chunks.get(key(x >> 4, z >> 4));
       out({ev: 'query', x, y, z, block: c ? c.getBlock(new Vec3(x & 15, y, z & 15)).name : null});
+    } else if (cmd === 'use') {
+      const [x, y, z] = a.map(Number);
+      try {
+        client.write('block_place', {hand: 0, location: {x, y, z}, direction: 2, cursorX: 0.5, cursorY: 0.5, cursorZ: 0.5,
+          insideBlock: false, worldBorderHit: false, sequence: 2});
+        out({ev: 'used', x, y, z});
+      } catch (e) { out({ev: 'use-error', msg: e.message}); }
     } else if (cmd === 'dig') {
       const [x, y, z] = a.map(Number);
       client.write('block_dig', {status: 0, location: {x, y, z}, face: 1, sequence: 1});

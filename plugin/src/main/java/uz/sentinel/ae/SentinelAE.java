@@ -114,6 +114,24 @@ public final class SentinelAE extends JavaPlugin implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void blockBreak(org.bukkit.event.block.BlockBreakEvent event) { if (guard != null) guard.broken(event.getBlock(), event.getPlayer()); }
 
+    /** Clicks on a hidden storage block that is not in sight are probes: refused (see StorageGuard#refuseProbe). */
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void interact(org.bukkit.event.player.PlayerInteractEvent event) {
+        if (guard == null || event.getClickedBlock() == null) return;
+        var action = event.getAction();
+        if (action != org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK && action != org.bukkit.event.block.Action.LEFT_CLICK_BLOCK) return;
+        if (guard.refuseProbe(event.getPlayer(), event.getClickedBlock())) {
+            event.setUseInteractedBlock(org.bukkit.event.Event.Result.DENY);
+            event.setUseItemInHand(org.bukkit.event.Event.Result.DENY);
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void damage(org.bukkit.event.block.BlockDamageEvent event) {
+        if (guard != null && guard.refuseProbe(event.getPlayer(), event.getBlock())) event.setCancelled(true);
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void removed(EntityRemoveFromWorldEvent event) {
         if (!(event.getEntity() instanceof Player)) engine.forget(event.getEntity());

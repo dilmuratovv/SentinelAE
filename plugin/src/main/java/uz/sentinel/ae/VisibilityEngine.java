@@ -60,8 +60,13 @@ final class VisibilityEngine {
 
     private final Map<UUID, Map<UUID, Pair>> byViewer = new HashMap<>();
     private final Map<UUID, Set<Pair>> byTarget = new HashMap<>();
-    private final PriorityQueue<Item> queue = new PriorityQueue<>((a, b) ->
-            a.due != b.due ? Long.compare(a.due, b.due) : Long.compare(a.seq, b.seq));
+    private static final java.util.Comparator<Item> ORDER = (a, b) ->
+            a.due != b.due ? Long.compare(a.due, b.due) : Long.compare(a.seq, b.seq);
+    private final PriorityQueue<Item> players = new PriorityQueue<>(ORDER), others = new PriorityQueue<>(ORDER);
+    private long lastOthersLate;
+    private static final int NEW_PAIR_CHECKS = 256;
+    private long newPairTick = Long.MIN_VALUE, deferredNew;
+    private int newPairChecks;
     private final Map<UUID, Motion> motion = new HashMap<>();
     private final Map<UUID, ViewerState> viewers = new HashMap<>();
     private final List<Pair> pendingApiHide = new ArrayList<>();
@@ -134,7 +139,7 @@ final class VisibilityEngine {
     private void schedule(Pair p, long due) {
         if (p.dead || (p.due != 0 && p.due <= due)) return;
         p.due = due;
-        queue.add(new Item(p, due, seq++));
+        (settings.primary(p.target.getType()) ? players : others).add(new Item(p, due, seq++));
     }
 
     /** Re-checks every pair involving this entity on the next tick (teleport, game mode change...). */
@@ -169,6 +174,19 @@ final class VisibilityEngine {
         Pair p = pair(viewer, target, false);
         if (busy || p != null) return p == null || !p.concealed;
         p = pair(viewer, target, true);
+        if (!settings.primary(target.getType())) {
+            // A crowd arriving at once (a player walking into a farm) would cost thousands of raycasts in one tick.
+            // Past the limit, other subjects start concealed and are checked in the next ticks; players never wait.
+            if (newPairTick != tick) { newPairTick = tick; newPairChecks = 0; }
+            if (++newPairChecks > NEW_PAIR_CHECKS) {
+                p.concealed = true;
+                p.blockedStreak = settings.concealAfter();
+                p.distance = viewer.getLocation(la).distance(target.getLocation(lb));
+                deferredNew++;
+                schedule(p, tick + 1);
+                return false;
+            }
+        }
         p.concealed = !visible(p);   // nothing was shown yet, so no hysteresis
         p.blockedStreak = p.concealed ? settings.concealAfter() : 0;
         if (p.concealed) conceals++;
@@ -195,6 +213,22 @@ final class VisibilityEngine {
 
     // ------------------------------------------------------------------ scheduling
 
+    /** Checks due pairs of one queue until the pair count or the time runs out; true when it ran out. */
+    private boolean drain(PriorityQueue<Item> queue, long now, int maxDone, long until, int[] done) {
+        while (!queue.isEmpty() && queue.peek().due <= now) {
+            if (done[0] >= maxDone || System.nanoTime() >= until) return true;
+            Item item = queue.poll();
+            Pair p = item.pair;
+            if (p.dead || item.due != p.due) continue;
+            p.due = 0;
+            long c0 = System.nanoTime();
+            check(p);
+            checkNanos += System.nanoTime() - c0;
+            done[0]++;
+        }
+        return false;
+    }
+
     void tick(long now) {
         tick = now;
         Settings s = settings;
@@ -203,48 +237,34 @@ final class VisibilityEngine {
             for (Pair p : pendingApiHide) if (!p.dead && p.concealed && !p.apiHidden) apiHide(p);
             pendingApiHide.clear();
         }
-        int done = 0, secondary = 0;
-        int secondaryCap = (int) Math.max(1, s.pairsPerTick() * s.secondaryShare());
-        long secondaryNanos = (long) (s.maxNanosPerTick() * s.secondaryShare());
-        boolean cut = false;
-        List<Item> deferred = null;
-        int polled = 0, pollCap = s.pairsPerTick() * 4;
-        while (!queue.isEmpty() && queue.peek().due <= now) {
-            if (done >= s.pairsPerTick() || System.nanoTime() - start >= s.maxNanosPerTick()) { cut = true; break; }
-            if (++polled > pollCap) break; // the rest are deferred secondary pairs: next tick
-            Item item = queue.poll();
-            Pair p = item.pair;
-            if (p.dead || item.due != p.due) continue;
-            // Players come first: other subjects (items, frames, mobs...) only get a share of the budget.
-            if (!s.primary(p.target.getType()) && (secondary >= secondaryCap || System.nanoTime() - start >= secondaryNanos)) {
-                if (deferred == null) deferred = new ArrayList<>();
-                deferred.add(item);
-                continue;
-            }
-            p.due = 0;
-            long c0 = System.nanoTime();
-            check(p);
-            checkNanos += System.nanoTime() - c0;
-            done++;
-            if (!s.primary(p.target.getType())) secondary++;
-        }
-        if (deferred != null) for (Item it : deferred) queue.add(it);
-        // Counting late pairs walks the queue, so only do it when the budget actually ran out.
+        // Two queues: players first, with the whole budget; then other subjects with what is left, at most their
+        // share. A big farm can then never push a player's check back.
+        long budgetEnd = start + s.maxNanosPerTick();
+        int[] done = {0};
+        boolean cut = drain(players, now, s.pairsPerTick(), budgetEnd, done);
+        long secondaryEnd = Math.min(budgetEnd, System.nanoTime() + (long) (s.maxNanosPerTick() * s.secondaryShare()));
+        int secondaryCap = Math.max(1, (int) Math.min(s.pairsPerTick() - done[0], s.pairsPerTick() * s.secondaryShare()));
+        if (!cut) drain(others, now, done[0] + secondaryCap, secondaryEnd, done);
         long late = 0;
-        // Walking the whole queue costs: only when players themselves ran out of budget, or now and then.
-        if (cut || (deferred != null && now % 10 == 0)) {
-            for (Item it : queue) {
+        if (cut) { // players themselves ran out of budget: fail open for the ones waiting too long
+            for (Item it : players) {
                 Pair p = it.pair;
                 if (it.due > now || p.dead || it.due != p.due) continue;
                 late++;
-                // Fail open: a concealed player whose check is overdue is shown rather than risk an invisible attacker.
-                if (p.concealed && s.primary(p.target.getType()) && now - it.due >= s.failOpenTicks()) {
+                if (p.concealed && now - it.due >= s.failOpenTicks()) {
                     p.blockedStreak = 0;
                     reveal(p);
                     failOpens++;
                 }
             }
         }
+        // Counting the other queue walks it, so only every 10 ticks; in between the last count is reported.
+        if (now % 10 == 0) {
+            long others0 = 0;
+            for (Item it : others) if (it.due <= now && !it.pair.dead && it.due == it.pair.due) others0++;
+            lastOthersLate = others0;
+        }
+        late += lastOthersLate;
         lagging = late;
         long took = System.nanoTime() - start;
         lastTickNanos = took;
@@ -278,10 +298,15 @@ final class VisibilityEngine {
         schedule(p, tick + interval(p));
     }
 
-    /** Players as often as the distance needs; other subjects (items, frames, mobs) half as often. */
+    /**
+     * Players as often as the distance needs. Other subjects (items, frames, mobs): concealed ones at half that rate
+     * (they must appear in time), shown ones at a quarter (disappearing a moment later behind cover costs nothing),
+     * so a big farm in plain view does not eat the budget the hidden ones need.
+     */
     private int interval(Pair p) {
         int i = SamplePoints.interval(p.distance, p.concealed);
-        return settings.primary(p.target.getType()) ? i : i * 2;
+        if (settings.primary(p.target.getType())) return i;
+        return p.concealed ? i * 2 : i * 4;
     }
 
     /**
@@ -362,7 +387,8 @@ final class VisibilityEngine {
                 drop(p);
             }
         }
-        queue.clear();
+        players.clear();
+        others.clear();
     }
 
     // ------------------------------------------------------------------ line of sight
@@ -514,7 +540,7 @@ final class VisibilityEngine {
                 + ", monitored=" + monitored + ", checks=" + checks + ", rays=" + rays
                 + ", us/check=" + (checks == 0 ? "0" : String.format("%.1f", checkNanos / 1000.0 / checks))
                 + ", conceals=" + conceals + ", reveals=" + reveals + ", purges=" + purges + ", lagging=" + lagging
-                + ", fail-opens=" + failOpens
+                + ", fail-opens=" + failOpens + ", new-pairs deferred=" + deferredNew
                 + ", tick last=" + lastTickNanos / 1000 + "us avg=" + avg + "us max=" + maxTickNanos / 1000 + "us";
     }
 }

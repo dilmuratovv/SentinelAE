@@ -21,6 +21,7 @@ def main():
     p.add_argument('--mojang-cache', type=Path)
     p.add_argument('--viewers', type=int, default=3)
     p.add_argument('--no-ae', action='store_true')
+    p.add_argument('--farm', action='store_true', help='entities instead of storage blocks: items, villagers, horses, wolves')
     p.add_argument('--accept-eula', action='store_true')
     a = p.parse_args()
     d = a.work / 'server'
@@ -42,16 +43,33 @@ def main():
     bots, samples = [], []
     try:
         srv.pump('Done (', 300)
-        for c in ('forceload add 0 0 64 64', 'fill -2 -60 -2 66 -54 -2 stone', 'fill 0 -60 0 63 -58 63 chest',
-                  'fill 0 -57 0 63 -57 63 barrel'):
-            srv.send(c)
-            srv.pump(seconds=4)
+        if a.farm:
+            # A busy base: an item collector, a trading hall, a horse pen and dogs, half behind a wall.
+            cmds = ['forceload add -16 -16 80 80', 'fill -2 -60 -2 66 -54 -2 stone', 'fill 0 -61 0 63 -61 63 stone']
+            for i in range(600):
+                cmds.append(f'summon item {i % 30 * 2 + 1} -60 {i // 30 * 3 + 1} {{Item:{{id:"minecraft:cobblestone",count:1}},Age:-32768,PickupDelay:32767}}')
+            for i in range(120):
+                cmds.append(f'summon villager {i % 12 * 5 + 2} -60 {i // 12 * 6 + 2} {{NoAI:1b}}')
+            for i in range(60):
+                cmds.append(f'summon horse {i % 10 * 6 + 3} -60 {i // 10 * 9 + 4}')
+            for i in range(60):
+                cmds.append(f'summon wolf {i % 10 * 6 + 4} -60 {i // 10 * 9 + 6}')
+            srv.send(cmds[0]); srv.pump(seconds=5)  # forceload first: the wall needs loaded chunks
+            for c in cmds[1:]:
+                srv.send(c)
+            srv.pump(seconds=12)
+        else:
+            for c in ('forceload add -16 -16 80 80', 'fill -2 -60 -2 66 -54 -2 stone', 'fill 0 -60 0 63 -58 63 chest',
+                      'fill 0 -57 0 63 -57 63 barrel'):
+                srv.send(c)
+                srv.pump(seconds=4)
         srv.send('forceload remove all')
         for i in range(a.viewers):
             bots.append(Proc(['node', str(BOT), str(port), f'V{i}', '1.21.11']))
             srv.pump(f'V{i} joined the game', 60)
         srv.pump(seconds=5)
-        positions = [(-10, -20), (32, -12), (70, 30), (32, 75), (-12, 32)]
+        # mostly behind the wall (the farm must be hidden), sometimes in plain view
+        positions = [(32, -12), (10, -14), (50, -16), (70, 30), (-12, 32)]
         for step in range(16):
             for i in range(a.viewers):
                 x, z = positions[(step + i) % len(positions)]

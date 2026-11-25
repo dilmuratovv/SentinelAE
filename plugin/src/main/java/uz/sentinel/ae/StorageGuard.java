@@ -36,7 +36,7 @@ final class StorageGuard {
     final Map<Long, Integer> breakers = new ConcurrentHashMap<>();
     private final Map<Long, Long> breakerExpiry = new HashMap<>();
     private long tick;
-    private long reveals, rehides, injected, failedInjections, rays;
+    private long reveals, rehides, probes, injected, failedInjections, rays;
 
     StorageGuard(Plugin plugin, Nms nms, Settings settings, java.util.function.Supplier<boolean[]> occluding) {
         this.plugin = plugin; this.nms = nms; this.settings = settings; this.occluding = occluding;
@@ -102,6 +102,24 @@ final class StorageGuard {
     void chunkUnloaded(Player p, int cx, int cz) {
         ViewState v = views.get(p.getUniqueId());
         if (v != null) v.dropChunk(Nms.chunkKey(cx, cz));
+    }
+
+    /**
+     * A player clicked (used or started breaking) a block. A legitimate client cannot click a storage block it was
+     * sent as air or stone; a hacked one can send clicks at guessed positions within reach to find chests behind
+     * walls. Unless the block is really in sight, the click is refused and nothing is revealed.
+     */
+    boolean refuseProbe(Player p, Block b) {
+        if (!settings.storageEsp()) return false;
+        ViewState v = views.get(p.getUniqueId());
+        if (v == null || v.bypass) return false;
+        long key = Nms.key(b.getX(), b.getY(), b.getZ());
+        if (!v.isHidden(key)) return false;
+        if (visible(p, b.getX(), b.getY(), b.getZ())) { sendReal(p, key, true); v.lastSeen.put(key, tick); return false; }
+        probes++;
+        if (settings.debug()) plugin.getLogger().info("[debug] storage probe refused " + b.getType() + " " + b.getX() + ","
+                + b.getY() + "," + b.getZ() + " by " + p.getName());
+        return true;
     }
 
     void broken(Block b, Player breaker) {
@@ -258,7 +276,7 @@ final class StorageGuard {
         }
         for (PacketGuard g : guards.values()) { rewritten += g.rewritten; dropped += g.dropped; }
         return "storage ESP " + (settings.storageEsp() ? "on" : "off") + " (" + nms.storageStates() + " block states): hidden="
-                + hidden + ", revealed=" + revealed + ", reveals=" + reveals + ", rehides=" + rehides + ", chunks rewritten=" + rewritten
+                + hidden + ", revealed=" + revealed + ", reveals=" + reveals + ", rehides=" + rehides + ", probes refused=" + probes + ", chunks rewritten=" + rewritten
                 + ", packets dropped=" + dropped + ", connections=" + injected + (failedInjections > 0 ? ", injection failures=" + failedInjections : "")
                 + ", rays=" + rays;
     }

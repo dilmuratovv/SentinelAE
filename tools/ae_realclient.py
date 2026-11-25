@@ -23,6 +23,10 @@ def main():
     p.add_argument('--plugin', type=Path, action='append', default=[])
     p.add_argument('--mojang-cache', type=Path)
     p.add_argument('--bot-version', default='1.21.11')
+    p.add_argument('--cheat', choices=['meteor', 'liquidbounce'], default='meteor')
+    p.add_argument('--paper-world', type=Path, help='a paper-world.yml to start the world with (e.g. anti-xray on)')
+    p.add_argument('--paper-world-path', default='world/paper-world.yml',
+                   help='where it goes (26.x: world/dimensions/minecraft/overworld/paper-world.yml)')
     p.add_argument('--accept-eula', action='store_true')
     a = p.parse_args()
     if not a.accept_eula:
@@ -40,6 +44,10 @@ def main():
             def keep(path, *x, **y):
                 real(path, *x, **y)
                 shutil.copytree(a.mojang_cache, work / 'server' / 'cache')
+                if a.paper_world:
+                    dest = work / 'server' / a.paper_world_path
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(a.paper_world, dest)
             shutil.rmtree = keep
             try:
                 (work / 'server').mkdir(parents=True, exist_ok=True)
@@ -69,7 +77,8 @@ def main():
 
     try:
         # A closed stone room around the player; outside: chests, a barrel, a player, entities.
-        cmd('forceload add -32 -32 32 32', 'setworldspawn 0 -60 0', 'gamerule spawnRadius 0')  # no player yet: the area must be loaded for fill/setblock
+        cmd('forceload add -32 -32 32 32', 'setworldspawn 0 -60 0', 'gamerule spawnRadius 0', 'gamerule minecraft:spawn_radius 0',
+            'gamerule spawn_radius 0')  # no player yet: the area must be loaded for fill/setblock
         server.pump(seconds=3)
         cmd('fill -6 -60 -6 6 -55 6 stone hollow', 'fill -5 -60 -5 5 -56 5 air',
             'setblock 0 -60 9 chest', 'setblock 2 -60 9 barrel', 'setblock -2 -60 9 shulker_box', 'setblock 3 -60 12 chest',
@@ -84,8 +93,9 @@ def main():
         client.center()
         cmd(f'gamemode survival {player}', f'tp {player} 0.5 -60 0.5 0 10')
         server.pump(seconds=4)
-        for m in ('storage-esp', 'esp', 'tracers'):
-            client.chat(f'.toggle {m} on')
+        modules = ('storage-esp', 'esp', 'tracers') if a.cheat == 'meteor' else ('StorageESP', 'ESP', 'Tracers')
+        for m in modules:
+            client.chat(f'.toggle {m} on' if a.cheat == 'meteor' else f'.toggle {m}')
         server.pump(seconds=4)
         client.screenshot(a.work / 'esp-closed-room.png')
         print('screenshot esp-closed-room.png (nothing outside the room may be outlined)', flush=True)
@@ -110,9 +120,10 @@ def main():
         server.pump(seconds=4)
         client.screenshot(a.work / 'esp-door.png')
         log = (a.work / 'client.log').read_text(errors='replace') if (a.work / 'client.log').exists() else ''
-        bad = [l for l in log.splitlines() if any(k in l for k in ('Failed to decode', 'Error loading chunk', 'chunk',
-                                                                   'Disconnected', 'Lost connection', 'Bad packet', 'DecoderException'))
-               and ('ERROR' in l or 'WARN' in l)]
+        # Real trouble only: a lost connection or a packet the client could not read (mod warnings are not it).
+        keys = ('Disconnected', 'Lost connection', 'DecoderException', 'Failed to decode', 'Error loading chunk',
+                'Bad packet', 'Packet error', 'kicked')
+        bad = [l for l in log.splitlines() if any(k in l for k in keys)]
         check('real client loaded every chunk and stayed connected', client.alive() and not bad, '; '.join(bad[:3]))
         server.cmd('sae status')
         st = server.pump('storage ESP', 10) or ''

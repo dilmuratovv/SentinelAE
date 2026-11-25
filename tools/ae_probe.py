@@ -58,6 +58,7 @@ def main():
     p.add_argument('--mojang-cache', type=Path)
     p.add_argument('--client-version', default='1.21.11')
     p.add_argument('--boat', default='oak_boat')
+    p.add_argument('--restart-first', action='store_true', help='start and stop once first (plugins that apply on restart)')
     p.add_argument('--accept-eula', action='store_true')
     a = p.parse_args()
     if not a.accept_eula:
@@ -77,6 +78,10 @@ def main():
         f'server-ip=127.0.0.1\nserver-port={port}\nonline-mode=false\nwhite-list=false\nenforce-whitelist=false\n'
         'max-players=5\nview-distance=4\nsimulation-distance=4\ngenerate-structures=false\nlevel-type=minecraft:flat\n'
         'spawn-protection=0\ndifficulty=peaceful\nspawn-monsters=false\nspawn-animals=false\n')
+    if a.restart_first:
+        first = Proc([a.java, '-Xms256M', '-Xmx900M', '-jar', str(a.paper.resolve()), '--nogui'], cwd=srv_dir)
+        first.pump('Done (', 300)
+        first.send('stop'); first.p.wait(120)
     server = Proc([a.java, '-Xms256M', '-Xmx900M', '-jar', str(a.paper.resolve()), '--nogui'], cwd=srv_dir)
     results, viewer, target = [], None, None
 
@@ -166,6 +171,26 @@ def main():
         check('break animation of concealed player dropped', not anims, str(anims))
         check('control sound delivered', any(e.get('ev') == 'sound' and e['z'] < 5 for e in ev), str(ev[-5:]))
         check('control particles delivered', any(e.get('ev') == 'particle' and e['z'] < 5 for e in ev), '')
+
+        # A hacked client clicks guessed positions within reach to find a chest behind a wall.
+        for c in ('tp Viewer -9.5 -60 0.5 0 0', 'fill -12 -60 2 -8 -54 2 stone', 'setblock -10 -60 3 chest'):
+            server.send(c)
+        server.pump(seconds=3)
+        mark = len(viewer.log)
+        viewer.send('use -10 -60 3'); server.pump(seconds=2)
+        viewer.send('dig -10 -60 3'); server.pump(seconds=2)
+        ev = events(viewer, mark)
+        probe = query(-10, -60, 3)
+        opened = [e for e in ev if e.get('ev') == 'open-window']
+        used = [e for e in ev if e.get('ev') in ('used', 'use-error')]
+        check('probe click through a wall opens nothing and reveals nothing',
+              not opened and probe != 'chest' and bool(used) and used[0]['ev'] == 'used', f'opened={opened} block={probe} used={used}')
+        server.send('fill -12 -60 2 -8 -54 2 air'); server.pump(seconds=2)
+        mark = len(viewer.log)
+        viewer.send('use -10 -60 3'); server.pump(seconds=2)
+        ev = events(viewer, mark)
+        check('control: the same click in sight opens the chest', any(e.get('ev') == 'open-window' for e in ev), str(ev[-4:]))
+        viewer.send('close'); server.send('tp Viewer 0.5 -60 0.5 0 0'); server.pump(seconds=2)
 
         mark = len(viewer.log)
         server.send('fill -8 -60 6 8 -54 6 air'); server.pump(seconds=3)

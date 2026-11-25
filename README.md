@@ -49,12 +49,13 @@ Together: SentinelGuard adds the findings of SentinelAC, SentinelAD and Sentinel
 | **Line of sight** | An exact voxel raycast (Amanatides–Woo) from the viewer's eyes to 15 points of the target. Only full, opaque blocks hide; glass, leaves, slabs and doors do not. |
 | **Every kind of ESP** | Players, armor stands, item frames, paintings, boats, minecarts (with chests), horses, pets, villagers, projectiles and dropped items: ESP, tracers, radar and base finders have nothing to draw behind walls. |
 | **Storage ESP** | Chests, barrels, shulker boxes, ender chests, hoppers, furnaces, spawners... arrive as air (full blocks as stone) in the chunk data itself and are sent for real once in sight; out of sight for a while, they are hidden again. Their open/close animations and sounds stay hidden too. |
+| **No probing** | Clicks or digs on a hidden storage block that is not in sight (a hacked client guessing positions within reach) are refused. |
 | **Sound ESP** | Footsteps, eating, attacks, mining animations and particles of a concealed player are not sent to whoever it is concealed from. |
 | **No packets** | A concealed target is removed from Paper's tracker for that viewer: not a single packet about it reaches the client. |
 | **Tab list stays** | Hidden players remain in the tab list, and other plugins' vanish/hide features are left alone. |
 | **Lag compensation** | Target and viewer velocity are tracked (projectiles use their exact server velocity); the viewer's ping widens the look-ahead, so high-ping players see enemies in time. |
 | **No flicker** | A target is concealed only after `conceal-after-checks` blocked checks in a row; revealed immediately when visible. |
-| **Budgeted** | Players first, other subjects share `secondary-share` of the budget; near hidden pairs every tick, far and visible ones less often. Under overload a concealed player is shown rather than late (`fail-open-ticks`). |
+| **Budgeted** | Players have their own queue and go first; other subjects share `secondary-share` of the budget; near hidden pairs every tick, far and visible ones less often. Under overload a concealed player is shown rather than late (`fail-open-ticks`). |
 | **Safe fallback** | If Paper internals ever change, SentinelAE switches to Paper's hide/show API automatically. |
 
 ## How it works
@@ -122,7 +123,7 @@ The JAR is compiled against the oldest supported API (Paper 1.21); every class a
 ### Good to know
 
 - The server cannot take back a position the client has already seen; hiding starts about 0.3–0.4 s after a target goes behind a wall (`conceal-after-checks`).
-- Storage blocks within 48 blocks of a player are revealed as soon as one face is in sight; farther ones stay hidden (cosmetic: a chest 60 blocks away in the open shows a moment later). A hacked client that probes positions with block interactions inside its reach can still find a chest there.
+- Storage blocks within 48 blocks of a player are revealed as soon as one face is in sight; farther ones stay hidden (cosmetic: a chest 60 blocks away in the open shows a moment later).
 - Plain mobs are only protected with the `mobs` group (big farms cost more checks). A cheat that keeps its own record of everything it was ever sent keeps what the player once saw.
 - Player name tags are not visible through walls (unlike vanilla).
 - Folia, other forks and Paper before 1.21 are not supported.
