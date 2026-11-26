@@ -80,8 +80,12 @@ def main():
         'spawn-protection=0\ndifficulty=peaceful\nspawn-monsters=false\nspawn-animals=false\n')
     if a.restart_first:
         first = Proc([a.java, '-Xms256M', '-Xmx900M', '-jar', str(a.paper.resolve()), '--nogui'], cwd=srv_dir)
-        first.pump('Done (', 300)
-        first.send('stop'); first.p.wait(120)
+        try:
+            first.pump('Done (', 600)  # a fresh server patches Paper first; slow machines need the margin
+            first.send('stop'); first.p.wait(120)
+        finally:
+            if first.p.poll() is None:  # never leave a server behind
+                first.p.kill()
     server = Proc([a.java, '-Xms256M', '-Xmx900M', '-jar', str(a.paper.resolve()), '--nogui'], cwd=srv_dir)
     results, viewer, target = [], None, None
 
@@ -98,7 +102,7 @@ def main():
                 return e.get('block')
 
     try:
-        server.pump('Done (', 300)
+        server.pump('Done (', 600)
         # built before anyone joins: the very first chunks must already be filtered
         for c in ('fill 10 -60 20 20 -54 20 stone', 'setblock 15 -60 24 chest'):
             server.send(c)
