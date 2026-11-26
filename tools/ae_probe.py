@@ -107,7 +107,10 @@ def main():
     try:
         server.pump('Done (', 600)
         # built before anyone joins: the very first chunks must already be filtered
-        for c in ('fill 10 -60 20 20 -54 20 stone', 'setblock 15 -60 24 chest'):
+        # joining players spawn at a fixed point from which the wall hides the chest (a random spawn point could see
+        # past the end of the wall, and AE then rightly reveals it)
+        for c in ('gamerule spawnRadius 0', 'gamerule spawn_radius 0', 'setworldspawn 15 -60 2',
+                  'fill 10 -60 20 20 -54 20 stone', 'setblock 15 -60 24 chest'):
             server.send(c)
         server.pump(seconds=2)
         viewer = Proc(['node', str(BOT), str(port), 'Viewer', a.client_version])
