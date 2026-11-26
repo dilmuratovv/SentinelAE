@@ -6,7 +6,7 @@ block updates), entity concealment for every protected group, and the sound/part
   NODE_PATH=<lab>/node-ae/node_modules python3 tools/ae_probe.py --paper paper.jar --java java --jar SentinelAE.jar \
       [--via ViaVersion.jar --via ViaBackwards.jar] --mojang-cache dir --work dir --client-version 1.21.11 --accept-eula
 """
-import argparse, json, queue, shutil, socket, subprocess, sys, threading, time
+import argparse, os, json, queue, shutil, socket, subprocess, sys, threading, time
 from pathlib import Path
 
 BOT = Path(__file__).resolve().parent / 'client' / 'viewer.cjs'
@@ -71,6 +71,9 @@ def main():
         shutil.copy2(jar, srv_dir / 'plugins' / jar.name)
     if a.mojang_cache:
         shutil.copytree(a.mojang_cache, srv_dir / 'cache')
+    if os.environ.get('SENTINEL_LIBS_SEED') and not (srv_dir / 'libraries').exists():
+        # lab only: libraries of an earlier run of this Paper version, so plugins download nothing
+        shutil.copytree(os.environ['SENTINEL_LIBS_SEED'], srv_dir / 'libraries')
     (srv_dir / 'eula.txt').write_text('eula=true\n')
     with socket.socket() as s:
         s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]
