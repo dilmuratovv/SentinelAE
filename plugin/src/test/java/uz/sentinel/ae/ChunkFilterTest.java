@@ -115,12 +115,14 @@ class ChunkFilterTest {
                     b.single(STONE);
                     byte[] buf = b.bytes.toByteArray();
                     int length = buf.length;
+                    byte[] original = buf.clone();
                     ChunkFilter.Result r = ChunkFilter.hide(buf, id -> id == CHEST || id == BARREL, AIR);
                     assertNotNull(r, "layout fluid=" + fluid + " prefix=" + prefix + " bits=" + bits);
                     assertEquals(3, r.sections());
                     assertEquals(fluid, r.fluidCount());
-                    assertEquals(length, buf.length);
-                    int[] after = decode(buf, fluid, prefix, 1);
+                    assertArrayEquals(original, buf, "the input (maybe shared by other players) is left as it is");
+                    assertEquals(length, r.data().length);
+                    int[] after = decode(r.data(), fluid, prefix, 1);
                     int expectedHidden = 0;
                     for (int i = 0; i < 4096; i++) {
                         boolean storage = ids[i] == CHEST || ids[i] == BARREL;
@@ -129,7 +131,7 @@ class ChunkFilterTest {
                     }
                     assertEquals(expectedHidden, r.hidden().length);
                     for (int h : r.hidden()) assertEquals(1, h >>> 12);
-                    assertArrayEquals(new int[4096], decode(buf, fluid, prefix, 0));
+                    assertArrayEquals(new int[4096], decode(r.data(), fluid, prefix, 0));
                 }
             }
         }
@@ -197,7 +199,7 @@ class ChunkFilterTest {
             assertNotNull(r);
             assertEquals(l[0], r.fluidCount());
             assertEquals(l[1], r.lengthPrefix());
-            for (int[] ids : new int[][]{decode(buf, l[0], l[1], 0), decode(buf, l[0], l[1], 2)})
+            for (int[] ids : new int[][]{decode(r.data(), l[0], l[1], 0), decode(r.data(), l[0], l[1], 2)})
                 for (int id : ids) assertTrue(id != CHEST && id != BARREL);
         }
     }
@@ -222,5 +224,25 @@ class ChunkFilterTest {
         assertNull(ChunkFilter.hide(junk, id -> true, AIR));
         assertEquals(1, ChunkFilter.UNPARSED.sum());
         for (byte x : junk) assertEquals((byte) 0xFF, x);
+    }
+
+    @Test
+    void aSharedPacketGivesEveryPlayerTheWholeResult() throws IOException {
+        // Paper sends one refreshed chunk packet to every watching player: the second filter must still find
+        // everything (it used to read the first player's rewrite and hide nothing, so nothing was ever revealed).
+        Builder b = new Builder(true, false);
+        b.section(world(77), 8);
+        b.section(world(78), 15);
+        byte[] shared = b.bytes.toByteArray(), original = shared.clone();
+        ChunkFilter.expect("26.2");
+        ChunkFilter.Result first = ChunkFilter.hide(shared, id -> id == CHEST || id == BARREL, AIR);
+        ChunkFilter.Result second = ChunkFilter.hide(shared, id -> id == CHEST || id == BARREL, AIR);
+        assertNotNull(first);
+        assertNotNull(second);
+        assertTrue(first.hidden().length > 0);
+        assertArrayEquals(first.hidden(), second.hidden());
+        assertArrayEquals(first.data(), second.data());
+        assertArrayEquals(original, shared);
+        assertTrue(first.data() != second.data(), "each player gets its own bytes");
     }
 }

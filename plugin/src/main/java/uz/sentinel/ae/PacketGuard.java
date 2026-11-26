@@ -24,6 +24,7 @@ final class PacketGuard extends ChannelOutboundHandlerAdapter {
     /** Where chunk packets that are left alone are reported (set by the plugin). */
     static volatile java.util.function.Consumer<String> warn = s -> { };
     private static final java.util.concurrent.atomic.AtomicLong LAST_WARN = new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicBoolean COPY_WARNED = new java.util.concurrent.atomic.AtomicBoolean();
 
     void apply(Settings s) { settings = s; }
 
@@ -55,7 +56,7 @@ final class PacketGuard extends ChannelOutboundHandlerAdapter {
                 }
                 return changed ? nms.bundle(kept) : msg;
             }
-            case "ClientboundLevelChunkWithLightPacket": if (settings.storageEsp()) chunk(msg); return msg;
+            case "ClientboundLevelChunkWithLightPacket": return settings.storageEsp() ? chunk(msg) : msg;
             case "ClientboundBlockUpdatePacket": return settings.storageEsp() ? blockUpdate(msg) : msg;
             case "ClientboundSectionBlocksUpdatePacket": return settings.storageEsp() ? sectionUpdate(msg) : msg;
             case "ClientboundBlockEventPacket":
@@ -102,12 +103,13 @@ final class PacketGuard extends ChannelOutboundHandlerAdapter {
         return new double[]{nx.doubleValue() / f, ny.doubleValue() / f, nz.doubleValue() / f};
     }
 
-    private void chunk(Object packet) {
+    /** Returns the packet to send: the original, or this player's copy with storage blocks hidden. */
+    private Object chunk(Object packet) {
         Object data = Nms.call(packet, "getChunkData", "chunkData");
         int cx = Nms.i(packet, "getX", "x"), cz = Nms.i(packet, "getZ", "z");
-        if (data == null || cx == Integer.MIN_VALUE) return;
+        if (data == null || cx == Integer.MIN_VALUE) return packet;
         Object raw = Nms.get(data, "buffer");
-        if (!(raw instanceof byte[] buf)) return;
+        if (!(raw instanceof byte[] buf)) return packet;
         long chunk = Nms.chunkKey(cx, cz);
         view.dropChunk(chunk); // a resend replaces everything the client knew about this chunk
         long before = ChunkFilter.UNPARSED.sum() + ChunkFilter.AMBIGUOUS.sum() + ChunkFilter.REJECTED.sum();
@@ -122,9 +124,9 @@ final class PacketGuard extends ChannelOutboundHandlerAdapter {
                 warn.accept("Chunk packet left unchanged (x=" + cx + " z=" + cz + ", " + buf.length + " bytes, starts " + head + "): unreadable="
                         + ChunkFilter.UNPARSED.sum() + " ambiguous=" + ChunkFilter.AMBIGUOUS.sum() + " rejected=" + ChunkFilter.REJECTED.sum());
             }
-            return;
+            return packet;
         }
-        if (r.hidden().length == 0) return;
+        if (!r.changed()) return packet;
         rewritten++;
         int minY = view.minY;
         long[] keys = new long[r.hidden().length];
@@ -133,19 +135,36 @@ final class PacketGuard extends ChannelOutboundHandlerAdapter {
             keys[i] = Nms.key((cx << 4) + (local & 15), minY + (section << 4) + (local >>> 8), (cz << 4) + ((local >>> 4) & 15));
             view.hide(keys[i]);
         }
-        // The block entity list would name every chest; drop the entries of hidden blocks.
+        // The block entity list would name every chest: this player's copy leaves out the entries of hidden blocks.
         Object list = Nms.get(data, "blockEntitiesData");
+        List<Object> kept = null;
         if (list instanceof List<?> l) {
-            try {
-                l.removeIf(info -> {
-                    Object xz = Nms.get(info, "packedXZ"), y = Nms.get(info, "y");
-                    if (!(xz instanceof Integer p) || !(y instanceof Integer yy)) return false;
-                    int lx = (p >> 4) & 15, lz = p & 15;
-                    return view.isHidden(Nms.key((cx << 4) + lx, yy, (cz << 4) + lz));
-                });
-            } catch (UnsupportedOperationException ignored) { /* an immutable list: the block entities stay, their blocks are air */ }
+            kept = new ArrayList<>(l.size());
+            for (Object info : l) if (!hiddenEntity(info, cx, cz)) kept.add(info);
+        }
+        Map<String, Object> changes = new java.util.HashMap<>(4);
+        changes.put("buffer", r.data());
+        if (kept != null) changes.put("blockEntitiesData", kept);
+        Object out = ChunkPackets.withData(packet, changes);
+        if (out == null) {
+            // Unknown packet shape: fall back to rewriting the packet's own data (correct unless Paper shares it).
+            System.arraycopy(r.data(), 0, buf, 0, buf.length);
+            if (list instanceof List<?> l) {
+                try { l.removeIf(info -> hiddenEntity(info, cx, cz)); }
+                catch (UnsupportedOperationException ignored) { /* an immutable list: the block entities stay, their blocks are air */ }
+            }
+            out = packet;
+            if (!COPY_WARNED.getAndSet(true)) warn.accept("Chunk packets cannot be copied on this server version; rewriting them in place.");
         }
         view.fresh.add(keys);
+        return out;
+    }
+
+    private boolean hiddenEntity(Object info, int cx, int cz) {
+        Object xz = Nms.get(info, "packedXZ"), y = Nms.get(info, "y");
+        if (!(xz instanceof Integer p) || !(y instanceof Integer yy)) return false;
+        int lx = (p >> 4) & 15, lz = p & 15;
+        return view.isHidden(Nms.key((cx << 4) + lx, yy, (cz << 4) + lz));
     }
 
     private Object blockUpdate(Object packet) {
