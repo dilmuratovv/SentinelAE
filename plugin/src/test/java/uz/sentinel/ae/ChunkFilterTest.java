@@ -150,4 +150,77 @@ class ChunkFilterTest {
         ChunkFilter.writeOverlong(b, 0, 2, 5);
         assertEquals(5, ChunkFilter.readVarInt(b, new int[]{0}));
     }
+
+    private static byte[] emptyChunk(boolean fluid, boolean prefix, int sections) throws IOException {
+        Builder b = new Builder(fluid, prefix);
+        for (int i = 0; i < sections; i++) b.single(AIR);
+        return b.bytes.toByteArray();
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void resetExpected() { ChunkFilter.expect("unknown"); }
+
+    @Test
+    void versionsMapToTheirLayout() {
+        assertArrayEquals(new boolean[]{true, false}, ChunkFilter.layoutOf("26.2"));
+        assertArrayEquals(new boolean[]{true, false}, ChunkFilter.layoutOf("26.3.1"));
+        assertArrayEquals(new boolean[]{false, false}, ChunkFilter.layoutOf("1.21.11"));
+        assertArrayEquals(new boolean[]{false, false}, ChunkFilter.layoutOf("1.21.5"));
+        assertArrayEquals(new boolean[]{false, true}, ChunkFilter.layoutOf("1.21.4"));
+        assertArrayEquals(new boolean[]{false, true}, ChunkFilter.layoutOf("1.21"));
+        assertNull(ChunkFilter.layoutOf("nonsense"));
+    }
+
+    @Test
+    void anAllAirChunkFitsSeveralLayoutsAndIsNotGuessed() throws IOException {
+        // 24 empty sections of the 26.x layout are also a complete read in another layout: without knowing the
+        // server's layout nothing may be rewritten, and with it the right layout is used.
+        byte[] chunk = emptyChunk(true, false, 24);
+        ChunkFilter.AMBIGUOUS.reset();
+        assertNull(ChunkFilter.hide(chunk.clone(), id -> true, AIR));
+        assertEquals(1, ChunkFilter.AMBIGUOUS.sum());
+        ChunkFilter.expect("26.2");
+        ChunkFilter.Result r = ChunkFilter.hide(chunk.clone(), id -> id == CHEST, AIR);
+        assertNotNull(r);
+        assertEquals(24, r.sections());
+        assertTrue(r.fluidCount());
+    }
+
+    @Test
+    void theServersLayoutWinsOverAnotherThatAlsoFits() throws IOException {
+        for (boolean[] l : new boolean[][]{{true, false}, {false, false}, {false, true}}) {
+            Builder b = new Builder(l[0], l[1]);
+            for (int i = 0; i < 3; i++) b.section(world(i + 5), 8);
+            byte[] buf = b.bytes.toByteArray();
+            ChunkFilter.expect(l[0] ? "26.2" : l[1] ? "1.21.4" : "1.21.11");
+            ChunkFilter.Result r = ChunkFilter.hide(buf, id -> id == CHEST || id == BARREL, AIR);
+            assertNotNull(r);
+            assertEquals(l[0], r.fluidCount());
+            assertEquals(l[1], r.lengthPrefix());
+            for (int[] ids : new int[][]{decode(buf, l[0], l[1], 0), decode(buf, l[0], l[1], 2)})
+                for (int id : ids) assertTrue(id != CHEST && id != BARREL);
+        }
+    }
+
+    @Test
+    void aLayoutThatDoesNotMatchTheServerIsOnlyUsedWhenItIsTheOnlyFit() throws IOException {
+        Builder b = new Builder(false, true);
+        b.section(world(9), 8);
+        byte[] buf = b.bytes.toByteArray();
+        ChunkFilter.expect("26.2"); // the server says fluid layout, the data is the old prefixed one
+        ChunkFilter.Result r = ChunkFilter.hide(buf, id -> id == CHEST, AIR);
+        assertNotNull(r);
+        assertTrue(r.lengthPrefix());
+    }
+
+    @Test
+    void unreadableChunksAreCountedNotTouched() {
+        byte[] junk = new byte[64];
+        java.util.Arrays.fill(junk, (byte) 0xFF);
+        ChunkFilter.UNPARSED.reset();
+        ChunkFilter.expect("26.2");
+        assertNull(ChunkFilter.hide(junk, id -> true, AIR));
+        assertEquals(1, ChunkFilter.UNPARSED.sum());
+        for (byte x : junk) assertEquals((byte) 0xFF, x);
+    }
 }

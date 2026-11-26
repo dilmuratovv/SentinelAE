@@ -21,6 +21,9 @@ final class PacketGuard extends ChannelOutboundHandlerAdapter {
     private volatile Settings settings;
     private final Map<Long, Integer> breakers; // block key -> entity id of the player breaking it (main thread writes)
     volatile long rewritten, dropped;
+    /** Where chunk packets that are left alone are reported (set by the plugin). */
+    static volatile java.util.function.Consumer<String> warn = s -> { };
+    private static final java.util.concurrent.atomic.AtomicLong LAST_WARN = new java.util.concurrent.atomic.AtomicLong();
 
     void apply(Settings s) { settings = s; }
 
@@ -107,8 +110,21 @@ final class PacketGuard extends ChannelOutboundHandlerAdapter {
         if (!(raw instanceof byte[] buf)) return;
         long chunk = Nms.chunkKey(cx, cz);
         view.dropChunk(chunk); // a resend replaces everything the client knew about this chunk
+        long before = ChunkFilter.UNPARSED.sum() + ChunkFilter.AMBIGUOUS.sum() + ChunkFilter.REJECTED.sum();
         ChunkFilter.Result r = ChunkFilter.hide(buf, nms::replacement);
-        if (r == null || r.hidden().length == 0) return;
+        if (r == null) {
+            // A chunk this filter cannot read exactly is also one a packet reader (an anticheat) may choke on; name it.
+            long now = System.currentTimeMillis(), last = LAST_WARN.get();
+            if (ChunkFilter.UNPARSED.sum() + ChunkFilter.AMBIGUOUS.sum() + ChunkFilter.REJECTED.sum() > before
+                    && now - last > 30_000 && LAST_WARN.compareAndSet(last, now)) {
+                StringBuilder head = new StringBuilder();
+                for (int i = 0; i < Math.min(24, buf.length); i++) head.append(String.format("%02x", buf[i]));
+                warn.accept("Chunk packet left unchanged (x=" + cx + " z=" + cz + ", " + buf.length + " bytes, starts " + head + "): unreadable="
+                        + ChunkFilter.UNPARSED.sum() + " ambiguous=" + ChunkFilter.AMBIGUOUS.sum() + " rejected=" + ChunkFilter.REJECTED.sum());
+            }
+            return;
+        }
+        if (r.hidden().length == 0) return;
         rewritten++;
         int minY = view.minY;
         long[] keys = new long[r.hidden().length];

@@ -33,6 +33,8 @@ public final class SentinelAE extends JavaPlugin implements Listener {
 
     @Override public void onEnable() {
         saveDefaultConfig();
+        ChunkFilter.expect(getServer().getMinecraftVersion());
+        PacketGuard.warn = getLogger()::warning;
         Settings settings = load();
         TrackerAccess access = settings.apiOnly() || getServer().getWorlds().isEmpty() ? null
                 : TrackerAccess.create(getServer().getWorlds().get(0), craftPlayerClass(), getLogger()::warning);

@@ -277,6 +277,7 @@ final class StorageGuard {
         for (PacketGuard g : guards.values()) { rewritten += g.rewritten; dropped += g.dropped; }
         return "storage ESP " + (settings.storageEsp() ? "on" : "off") + " (" + nms.storageStates() + " block states): hidden="
                 + hidden + ", revealed=" + revealed + ", reveals=" + reveals + ", rehides=" + rehides + ", probes refused=" + probes + ", chunks rewritten=" + rewritten
+                + ", chunks unreadable/ambiguous/rejected=" + ChunkFilter.UNPARSED.sum() + "/" + ChunkFilter.AMBIGUOUS.sum() + "/" + ChunkFilter.REJECTED.sum()
                 + ", packets dropped=" + dropped + ", connections=" + injected + (failedInjections > 0 ? ", injection failures=" + failedInjections : "")
                 + ", rays=" + rays;
     }
